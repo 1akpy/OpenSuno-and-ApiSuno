@@ -25,17 +25,18 @@ HEADERS = {
     "Referer": "https://suno.com/",
 }
 
-ALLOWED_CDN   = ("https://cdn1.suno.ai/", "https://cdn2.suno.ai/")
-SUNO_HOSTS    = ("suno.com", "www.suno.com", "studio-api.suno.ai", "studio-api.prod.suno.ai")
-MAX_URL_LEN   = 512
-UUID_RE       = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-UUID_FIND_RE  = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
-SONG_RE       = re.compile(r"suno\.com/song/([0-9a-f-]{36})", re.I)
+ALLOWED_CDN  = ("https://cdn1.suno.ai/", "https://cdn2.suno.ai/")
+SUNO_HOSTS   = ("suno.com", "www.suno.com", "studio-api.suno.ai", "studio-api.prod.suno.ai")
+MAX_URL_LEN  = 512
+MAX_STR_LEN  = 512   # max length for any string field from meta
+UUID_RE      = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+UUID_FIND_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+SONG_RE      = re.compile(r"suno\.com/song/([0-9a-f-]{36})", re.I)
 
-# ─── simple in-memory cache (TTL 5 min) ──────────────────────────────────────
+# ─── cache (TTL 5 min) ────────────────────────────────────────────────────────
 
 _cache: dict[str, tuple[dict, float]] = {}
-CACHE_TTL = 300  # seconds
+CACHE_TTL = 300
 
 def cache_get(key: str) -> dict | None:
     entry = _cache.get(key)
@@ -46,19 +47,42 @@ def cache_get(key: str) -> dict | None:
     return None
 
 def cache_set(key: str, value: dict) -> None:
-    # keep cache small — evict oldest if over 500 entries
     if len(_cache) >= 500:
         oldest = min(_cache, key=lambda k: _cache[k][1])
         del _cache[oldest]
     _cache[key] = (value, time.time() + CACHE_TTL)
 
-# ─── in-memory rate limiter (per IP, 20 req / 60s) ───────────────────────────
+# ─── rate limiter (per IP, 20 req / 60s) ─────────────────────────────────────
 
 _rl: dict[str, list[float]] = defaultdict(list)
+_rl_last_cleanup = 0.0
 RL_MAX    = 20
 RL_WINDOW = 60
 
+def _cleanup_rl() -> None:
+    """Periodically remove stale IPs to prevent memory leak."""
+    global _rl_last_cleanup
+    now = time.time()
+    if now - _rl_last_cleanup < 120:   # cleanup every 2 min
+        return
+    _rl_last_cleanup = now
+    stale = [ip for ip, hits in _rl.items() if all(now - t >= RL_WINDOW for t in hits)]
+    for ip in stale:
+        del _rl[ip]
+
+def get_real_ip(request: Request) -> str:
+    """
+    On Vercel, request.client.host is always the proxy IP.
+    Read X-Forwarded-For to get the real client IP.
+    Take only the FIRST value — that's the original client.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 def check_rate_limit(ip: str) -> bool:
+    _cleanup_rl()
     now  = time.time()
     hits = [t for t in _rl[ip] if now - t < RL_WINDOW]
     _rl[ip] = hits
@@ -78,10 +102,19 @@ def err(msg: str, code: int = 400):
 def clean(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
-def safe_cdn(url: str | None) -> str | None:
-    """Return url only if it points to Suno CDN, else None."""
+def safe_str(v) -> str | None:
+    """Sanitize a string field from untrusted meta — truncate, strip control chars."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    # remove control characters
+    s = re.sub(r'[\x00-\x1f\x7f]', '', s)
+    return s[:MAX_STR_LEN] if s else None
+
+def safe_cdn(url) -> str | None:
+    """Return url only if it starts with an allowed Suno CDN prefix."""
     if url and isinstance(url, str) and any(url.startswith(c) for c in ALLOWED_CDN):
-        return url
+        return url[:1024]  # cap length just in case
     return None
 
 def is_suno_host(url: str) -> bool:
@@ -102,13 +135,13 @@ def extract_id(url: str) -> str | None:
     return None
 
 async def resolve_short(url: str) -> str:
-    """Follow suno.com/s/xxx redirect — only allow redirects within suno.com."""
+    """Follow suno.com/s/xxx — manual redirect, SSRF-safe."""
     async with httpx.AsyncClient(
         timeout=8,
-        follow_redirects=False,   # manual redirect to prevent SSRF
+        follow_redirects=False,
         headers=HEADERS,
     ) as c:
-        for _ in range(5):        # max 5 hops
+        for _ in range(5):
             r = await c.get(url)
             if r.status_code in (301, 302, 303, 307, 308):
                 location = r.headers.get("location", "")
@@ -117,7 +150,7 @@ async def resolve_short(url: str) -> str:
                 if not location.startswith("http"):
                     location = "https://suno.com" + location
                 if not is_suno_host(location):
-                    raise ValueError(f"Redirect to non-Suno host blocked: {location}")
+                    raise ValueError("Redirect to non-Suno host blocked")
                 url = location
             else:
                 return str(r.url)
@@ -135,7 +168,7 @@ async def get_id(raw: str) -> str:
         resolved = await resolve_short(raw)
         tid = extract_id(resolved)
         if not tid:
-            raise ValueError(f"Could not extract ID from resolved URL")
+            raise ValueError("Could not extract ID from resolved URL")
         return tid
     tid = extract_id(raw)
     if not tid:
@@ -147,11 +180,15 @@ async def get_id(raw: str) -> str:
 async def _try_meta(client: httpx.AsyncClient, url: str) -> dict | None:
     try:
         r = await client.get(url)
-        if r.status_code == 200:
-            return r.json()
+        if r.status_code != 200:
+            return None
+        # check content-type before parsing JSON
+        ct = r.headers.get("content-type", "")
+        if "json" not in ct and "javascript" not in ct:
+            return None
+        return r.json()
     except Exception:
-        pass
-    return None
+        return None
 
 async def fetch_meta(track_id: str) -> dict | None:
     urls = [
@@ -159,7 +196,6 @@ async def fetch_meta(track_id: str) -> dict | None:
         f"https://studio-api.prod.suno.ai/api/clip/{track_id}/",
     ]
     async with httpx.AsyncClient(timeout=6, headers=HEADERS) as c:
-        # fire both in parallel, return first success
         results = await asyncio.gather(*[_try_meta(c, u) for u in urls])
     return next((r for r in results if r is not None), None)
 
@@ -178,10 +214,9 @@ def build(track_id: str, meta: dict | None) -> dict:
             if v is not None: return v
         return None
 
-    # validate CDN urls from meta — fallback to constructed if unsafe
-    mp3_url    = safe_cdn(g("audio_url"))        or cdn_mp3
-    cover_jpg  = safe_cdn(g("image_url"))        or cdn_jpg
-    cover_png  = safe_cdn(g("image_large_url"))  or cdn_png
+    mp3_url   = safe_cdn(g("audio_url"))       or cdn_mp3
+    cover_jpg = safe_cdn(g("image_url"))       or cdn_jpg
+    cover_png = safe_cdn(g("image_large_url")) or cdn_png
 
     return clean({
         "id":         track_id,
@@ -194,31 +229,30 @@ def build(track_id: str, meta: dict | None) -> dict:
             "cover_jpg": cover_jpg,
             "cover_png": cover_png,
         },
-        "title":        g("title", "display_name"),
-        "artist":       g("display_name", "user_display_name", "handle", "author"),
-        "tags":         g("tags") or m.get("tags"),
-        "genre":        m.get("genre") or m.get("style") or g("style"),
+        # all string fields sanitized
+        "title":        safe_str(g("title", "display_name")),
+        "artist":       safe_str(g("display_name", "user_display_name", "handle", "author")),
+        "tags":         safe_str(g("tags") or m.get("tags")),
+        "genre":        safe_str(m.get("genre") or m.get("style") or g("style")),
         "duration":     g("duration", "audio_duration"),
-        "created_at":   g("created_at"),
+        "created_at":   safe_str(g("created_at")),
         "is_public":    g("is_public"),
         "play_count":   g("play_count"),
         "upvote_count": g("upvote_count"),
-        "model":        g("model_version", "model"),
-        "prompt":       m.get("prompt") or m.get("gpt_description_prompt") or g("prompt"),
+        "model":        safe_str(g("model_version", "model")),
+        "prompt":       safe_str(m.get("prompt") or m.get("gpt_description_prompt") or g("prompt")),
     })
 
 # ─── routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/track")
 async def track(request: Request, url: str = Query(...)):
-    ip = request.client.host if request.client else "unknown"
+    ip = get_real_ip(request)
     if not check_rate_limit(ip):
         return err("Rate limit exceeded — max 20 requests per minute", 429)
-
     if not url or len(url) > MAX_URL_LEN:
         return err("URL too long or empty", 400)
 
-    # check cache first
     cached = cache_get(f"url:{url}")
     if cached:
         return ok(cached)
@@ -230,9 +264,9 @@ async def track(request: Request, url: str = Query(...)):
     except Exception as e:
         return err(f"Failed to resolve: {e}", 500)
 
-    # check cache by id
     cached = cache_get(tid)
     if cached:
+        cache_set(f"url:{url}", cached)
         return ok(cached)
 
     meta   = await fetch_meta(tid)
@@ -244,10 +278,9 @@ async def track(request: Request, url: str = Query(...)):
 
 @app.get("/track/{track_id}")
 async def track_by_id(request: Request, track_id: str):
-    ip = request.client.host if request.client else "unknown"
+    ip = get_real_ip(request)
     if not check_rate_limit(ip):
         return err("Rate limit exceeded — max 20 requests per minute", 429)
-
     if not UUID_RE.fullmatch(track_id):
         return err("Invalid UUID format", 400)
 
