@@ -2,20 +2,19 @@
 
 <br/>
 
-# 🎵 SunoAPI
+# 🎵 OpenSuno-and-ApiSuno
 
 ### Unofficial Suno track resolver — free & open source
 
 <br/>
 
 [![Live](https://img.shields.io/badge/Live-opensuno.vercel.app-fb923c?style=flat-square)](https://opensuno.vercel.app)
-[![Deploy](https://img.shields.io/badge/Deploy-Vercel-000?style=flat-square&logo=vercel)](https://vercel.com/new/clone?repository-url=https://github.com/1akpy/sunoapi)
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-fb923c?style=flat-square)](LICENSE)
 
 <br/>
 
-Pass any Suno link → get MP3, cover image and metadata. No API key. No auth. Use from any language.
+Pass any Suno link → get MP3, cover image and metadata. No API key. No auth.
 
 <br/>
 
@@ -26,9 +25,9 @@ Pass any Suno link → get MP3, cover image and metadata. No API key. No auth. U
 ## Endpoints
 
 ```
-GET /track?url=suno.com/s/{id}              short link
-GET /track?url=suno.com/song/{uuid}         full link
-GET /track/{uuid}                           direct UUID
+GET /track?url=suno.com/s/{id}         short link
+GET /track?url=suno.com/song/{uuid}    full link
+GET /track/{uuid}                      direct UUID
 ```
 
 ---
@@ -65,7 +64,7 @@ GET /track/{uuid}                           direct UUID
 
 **JavaScript**
 ```js
-const res  = await fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx');
+const res    = await fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx');
 const { data } = await res.json();
 
 new Audio(data.mp3_url).play();
@@ -103,30 +102,6 @@ fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx')
     document.getElementById('player').src = data.mp3_url;
   });
 </script>
-```
-
----
-
-## Deploy your own
-
-**Vercel (recommended, free)**
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/1akpy/sunoapi)
-
-or manually:
-
-```bash
-git clone https://github.com/1akpy/sunoapi
-cd sunoapi
-vercel
-```
-
-**Local**
-
-```bash
-pip install fastapi httpx uvicorn
-uvicorn api.index:app --reload
-# → http://localhost:8000
 ```
 
 ---
