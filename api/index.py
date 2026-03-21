@@ -295,8 +295,38 @@ async def track(request: Request, url: str = Query(...)):
     return ok(result)
 
 
-@app.get("/track/{track_id}")
-async def track_by_id(request: Request, track_id: str):
+@app.get("/download/{track_id}")
+async def download(request: Request, track_id: str):
+    """Proxy MP3 download — bypasses CDN CORS restrictions."""
+    ip = get_real_ip(request)
+    if not check_rate_limit(ip):
+        return err("Rate limit exceeded", 429)
+    if not UUID_RE.fullmatch(track_id):
+        return err("Invalid UUID format", 400)
+
+    mp3_url = f"https://cdn1.suno.ai/{track_id}.mp3"
+
+    try:
+        from fastapi.responses import StreamingResponse
+        async def stream():
+            async with httpx.AsyncClient(timeout=60, headers=HEADERS) as c:
+                async with c.stream("GET", mp3_url) as r:
+                    if r.status_code != 200:
+                        return
+                    async for chunk in r.aiter_bytes(chunk_size=8192):
+                        yield chunk
+
+        return StreamingResponse(
+            stream(),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{track_id}.mp3"',
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+    except Exception as e:
+        return err(f"Download failed: {e}", 500)
+
     ip = get_real_ip(request)
     if not check_rate_limit(ip):
         return err("Rate limit exceeded — max 20 requests per minute", 429)
