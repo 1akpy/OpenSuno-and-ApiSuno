@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from urllib.parse import urlparse   # top-level import — not inside function
 import httpx
 import re
 import asyncio
@@ -26,9 +27,9 @@ HEADERS = {
 }
 
 ALLOWED_CDN  = ("https://cdn1.suno.ai/", "https://cdn2.suno.ai/")
-SUNO_HOSTS   = ("suno.com", "www.suno.com", "studio-api.suno.ai", "studio-api.prod.suno.ai")
+SUNO_HOSTS   = {"suno.com", "www.suno.com", "studio-api.suno.ai", "studio-api.prod.suno.ai"}
 MAX_URL_LEN  = 512
-MAX_STR_LEN  = 512   # max length for any string field from meta
+MAX_STR_LEN  = 512
 UUID_RE      = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 UUID_FIND_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 SONG_RE      = re.compile(r"suno\.com/song/([0-9a-f-]{36})", re.I)
@@ -60,10 +61,9 @@ RL_MAX    = 20
 RL_WINDOW = 60
 
 def _cleanup_rl() -> None:
-    """Periodically remove stale IPs to prevent memory leak."""
     global _rl_last_cleanup
     now = time.time()
-    if now - _rl_last_cleanup < 120:   # cleanup every 2 min
+    if now - _rl_last_cleanup < 120:
         return
     _rl_last_cleanup = now
     stale = [ip for ip, hits in _rl.items() if all(now - t >= RL_WINDOW for t in hits)]
@@ -71,11 +71,6 @@ def _cleanup_rl() -> None:
         del _rl[ip]
 
 def get_real_ip(request: Request) -> str:
-    """
-    On Vercel, request.client.host is always the proxy IP.
-    Read X-Forwarded-For to get the real client IP.
-    Take only the FIRST value — that's the original client.
-    """
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
         return xff.split(",")[0].strip()
@@ -100,28 +95,50 @@ def err(msg: str, code: int = 400):
     return JSONResponse({"status": "error", "message": msg, "data": None}, status_code=code)
 
 def clean(d: dict) -> dict:
-    return {k: v for k, v in d.items() if v is not None}
+    """Remove None values recursively."""
+    result = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            nested = clean(v)
+            if nested:
+                result[k] = nested
+        elif v is not None:
+            result[k] = v
+    return result
 
 def safe_str(v) -> str | None:
-    """Sanitize a string field from untrusted meta — truncate, strip control chars."""
+    """Sanitize string from untrusted source."""
     if v is None:
         return None
     s = str(v).strip()
-    # remove control characters
     s = re.sub(r'[\x00-\x1f\x7f]', '', s)
     return s[:MAX_STR_LEN] if s else None
 
+def safe_num(v, typ=float):
+    """Return value only if it's the expected numeric type."""
+    if v is None:
+        return None
+    try:
+        return typ(v)
+    except (TypeError, ValueError):
+        return None
+
+def safe_bool(v) -> bool | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    return None
+
 def safe_cdn(url) -> str | None:
-    """Return url only if it starts with an allowed Suno CDN prefix."""
     if url and isinstance(url, str) and any(url.startswith(c) for c in ALLOWED_CDN):
-        return url[:1024]  # cap length just in case
+        return url[:1024]
     return None
 
 def is_suno_host(url: str) -> bool:
     try:
-        from urllib.parse import urlparse
         host = urlparse(url).hostname or ""
-        return any(host == h or host.endswith("." + h) for h in SUNO_HOSTS)
+        return host in SUNO_HOSTS or any(host.endswith("." + h) for h in SUNO_HOSTS)
     except Exception:
         return False
 
@@ -135,7 +152,6 @@ def extract_id(url: str) -> str | None:
     return None
 
 async def resolve_short(url: str) -> str:
-    """Follow suno.com/s/xxx — manual redirect, SSRF-safe."""
     async with httpx.AsyncClient(
         timeout=8,
         follow_redirects=False,
@@ -182,7 +198,6 @@ async def _try_meta(client: httpx.AsyncClient, url: str) -> dict | None:
         r = await client.get(url)
         if r.status_code != 200:
             return None
-        # check content-type before parsing JSON
         ct = r.headers.get("content-type", "")
         if "json" not in ct and "javascript" not in ct:
             return None
@@ -218,6 +233,10 @@ def build(track_id: str, meta: dict | None) -> dict:
     cover_jpg = safe_cdn(g("image_url"))       or cdn_jpg
     cover_png = safe_cdn(g("image_large_url")) or cdn_png
 
+    # fix: title and artist use different source keys — no overlap
+    title  = safe_str(g("title")) or safe_str(g("display_name"))
+    artist = safe_str(g("user_display_name") or g("handle") or g("author"))
+
     return clean({
         "id":         track_id,
         "suno_url":   f"https://suno.com/song/{track_id}",
@@ -229,16 +248,16 @@ def build(track_id: str, meta: dict | None) -> dict:
             "cover_jpg": cover_jpg,
             "cover_png": cover_png,
         },
-        # all string fields sanitized
-        "title":        safe_str(g("title", "display_name")),
-        "artist":       safe_str(g("display_name", "user_display_name", "handle", "author")),
+        "title":        title,
+        "artist":       artist,
         "tags":         safe_str(g("tags") or m.get("tags")),
         "genre":        safe_str(m.get("genre") or m.get("style") or g("style")),
-        "duration":     g("duration", "audio_duration"),
+        # numeric fields validated to correct type
+        "duration":     safe_num(g("duration", "audio_duration"), float),
         "created_at":   safe_str(g("created_at")),
-        "is_public":    g("is_public"),
-        "play_count":   g("play_count"),
-        "upvote_count": g("upvote_count"),
+        "is_public":    safe_bool(g("is_public")),
+        "play_count":   safe_num(g("play_count"), int),
+        "upvote_count": safe_num(g("upvote_count"), int),
         "model":        safe_str(g("model_version", "model")),
         "prompt":       safe_str(m.get("prompt") or m.get("gpt_description_prompt") or g("prompt")),
     })
