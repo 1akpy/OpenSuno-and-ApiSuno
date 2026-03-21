@@ -1,29 +1,34 @@
-# SunoAPI 🎵
+<div align="center">
 
-Unofficial Suno track resolver — pass any Suno link, get back MP3, cover and metadata URLs.
+<br/>
 
-Free to use. Deploy your own instance in 2 minutes.
+# 🎵 SunoAPI
+
+### Unofficial Suno track resolver — free & open source
+
+<br/>
+
+[![Live](https://img.shields.io/badge/Live-opensuno.vercel.app-fb923c?style=flat-square)](https://opensuno.vercel.app)
+[![Deploy](https://img.shields.io/badge/Deploy-Vercel-000?style=flat-square&logo=vercel)](https://vercel.com/new/clone?repository-url=https://github.com/1akpy/sunoapi)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-fb923c?style=flat-square)](LICENSE)
+
+<br/>
+
+Pass any Suno link → get MP3, cover image and metadata. No API key. No auth. Use from any language.
+
+<br/>
+
+</div>
 
 ---
 
 ## Endpoints
 
-### `GET /track?url=<suno_link>`
-
-Accepts **any** Suno link format:
-
 ```
-/track?url=suno.com/song/453a796e-a8e2-4d28-b24f-40f956cb5321
-/track?url=suno.com/s/r4t4FIFyoU7GTnX8
-/track?url=https://suno.com/song/453a796e-a8e2-4d28-b24f-40f956cb5321?sh=abc
-```
-
-### `GET /track/{id}`
-
-Direct lookup by UUID:
-
-```
-/track/453a796e-a8e2-4d28-b24f-40f956cb5321
+GET /track?url=suno.com/s/{id}              short link
+GET /track?url=suno.com/song/{uuid}         full link
+GET /track/{uuid}                           direct UUID
 ```
 
 ---
@@ -34,104 +39,100 @@ Direct lookup by UUID:
 {
   "status": "ok",
   "data": {
-    "id":         "453a796e-a8e2-4d28-b24f-40f956cb5321",
-    "mp3_url":    "https://cdn1.suno.ai/453a796e-....mp3",
-    "cover_url":  "https://cdn2.suno.ai/image_453a796e-....jpeg",
-    "cover_png":  "https://cdn2.suno.ai/image_453a796e-....png",
-    "stream_url": "https://cdn1.suno.ai/453a796e-....mp3",
-    "suno_url":   "https://suno.com/song/453a796e-...",
+    "id":        "453a796e-a8e2-4d28-b24f-40f956cb5321",
+    "suno_url":  "https://suno.com/song/453a796e-...",
+    "mp3_url":   "https://cdn1.suno.ai/453a796e-....mp3",
+    "cover_url": "https://cdn2.suno.ai/image_453a796e-....jpeg",
+    "cover_png": "https://cdn2.suno.ai/image_453a796e-....png",
     "download": {
       "mp3":       "https://cdn1.suno.ai/453a796e-....mp3",
       "cover_jpg": "https://cdn2.suno.ai/image_453a796e-....jpeg",
       "cover_png": "https://cdn2.suno.ai/image_453a796e-....png"
-    }
+    },
+    "title":    "Track title",
+    "artist":   "Artist name",
+    "tags":     "pop electronic",
+    "duration": 180
   }
 }
 ```
 
-Error:
-
-```json
-{
-  "status": "error",
-  "message": "No track ID found in URL",
-  "data": null
-}
-```
+> Null fields are omitted — only available data is returned.
 
 ---
 
-## Deploy to Vercel (free, 2 min)
-
-```bash
-git clone https://github.com/yourname/sunoapi
-cd sunoapi
-npm i -g vercel
-vercel
-```
-
-Or: push to GitHub → import on [vercel.com](https://vercel.com) → Deploy.
-
----
-
-## Use from anything
+## Usage
 
 **JavaScript**
 ```js
-const res  = await fetch('https://your-api.vercel.app/track?url=suno.com/s/r4t4FIFyoU7GTnX8');
-const json = await res.json();
-const { mp3_url, cover_url } = json.data;
+const res  = await fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx');
+const { data } = await res.json();
 
-// play
-const audio = new Audio(mp3_url);
-audio.play();
-
-// show cover
-document.getElementById('cover').src = cover_url;
+new Audio(data.mp3_url).play();
+document.getElementById('cover').src = data.cover_url;
 ```
 
 **Python**
 ```python
 import requests
 
-r    = requests.get('https://your-api.vercel.app/track?url=suno.com/s/r4t4FIFyoU7GTnX8')
-data = r.json()['data']
+data = requests.get(
+    'https://opensuno.vercel.app/track',
+    params={'url': 'suno.com/s/FqENDOXo6l4yKQT0'}
+).json()['data']
 
-print(data['mp3_url'])    # → https://cdn1.suno.ai/....mp3
-print(data['cover_url'])  # → https://cdn2.suno.ai/image_....jpeg
-```
-
-**HTML — minimal player**
-```html
-<input id="url" placeholder="suno.com/s/...">
-<button onclick="load()">Load</button>
-<img id="cover" width="200">
-<audio id="player" controls></audio>
-
-<script>
-async function load() {
-  const url  = document.getElementById('url').value;
-  const res  = await fetch(`https://your-api.vercel.app/track?url=${encodeURIComponent(url)}`);
-  const data = (await res.json()).data;
-  document.getElementById('cover').src      = data.cover_url;
-  document.getElementById('player').src     = data.mp3_url;
-}
-</script>
+print(data['mp3_url'])
+print(data['cover_url'])
 ```
 
 **curl**
 ```bash
-curl "https://your-api.vercel.app/track?url=suno.com/s/r4t4FIFyoU7GTnX8"
+curl "https://opensuno.vercel.app/track?url=suno.com/s/FqENDOXo6l4yKQT0"
+```
+
+**HTML**
+```html
+<img id="cover">
+<audio id="player" controls></audio>
+
+<script>
+fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx')
+  .then(r => r.json())
+  .then(({ data }) => {
+    document.getElementById('cover').src  = data.cover_url;
+    document.getElementById('player').src = data.mp3_url;
+  });
+</script>
 ```
 
 ---
 
-## Requirements (self-host)
+## Deploy your own
 
-- Python 3.9+
-- `pip install fastapi httpx uvicorn`
-- `uvicorn api.index:app --reload`
+**Vercel (recommended, free)**
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/1akpy/sunoapi)
+
+or manually:
+
+```bash
+git clone https://github.com/1akpy/sunoapi
+cd sunoapi
+vercel
+```
+
+**Local**
+
+```bash
+pip install fastapi httpx uvicorn
+uvicorn api.index:app --reload
+# → http://localhost:8000
+```
 
 ---
 
+<div align="center">
+
 *Not affiliated with Suno Inc. · Unofficial · Personal use only*
+
+</div>
