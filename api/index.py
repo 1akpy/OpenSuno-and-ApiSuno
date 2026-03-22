@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from urllib.parse import urlparse   # top-level import — not inside function
+from fastapi.responses import JSONResponse, StreamingResponse
+from urllib.parse import urlparse
 import httpx
 import re
 import asyncio
@@ -16,8 +16,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-
-# ─── constants ────────────────────────────────────────────────────────────────
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -34,10 +32,14 @@ UUID_RE      = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 UUID_FIND_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 SONG_RE      = re.compile(r"suno\.com/song/([0-9a-f-]{36})", re.I)
 
-# ─── cache (TTL 5 min) ────────────────────────────────────────────────────────
-
 _cache: dict[str, tuple[dict, float]] = {}
 CACHE_TTL = 300
+
+_rl: dict[str, list[float]] = defaultdict(list)
+_rl_last_cleanup = 0.0
+RL_MAX    = 20
+RL_WINDOW = 60
+
 
 def cache_get(key: str) -> dict | None:
     entry = _cache.get(key)
@@ -47,18 +49,13 @@ def cache_get(key: str) -> dict | None:
         del _cache[key]
     return None
 
+
 def cache_set(key: str, value: dict) -> None:
     if len(_cache) >= 500:
         oldest = min(_cache, key=lambda k: _cache[k][1])
         del _cache[oldest]
     _cache[key] = (value, time.time() + CACHE_TTL)
 
-# ─── rate limiter (per IP, 20 req / 60s) ─────────────────────────────────────
-
-_rl: dict[str, list[float]] = defaultdict(list)
-_rl_last_cleanup = 0.0
-RL_MAX    = 20
-RL_WINDOW = 60
 
 def _cleanup_rl() -> None:
     global _rl_last_cleanup
@@ -70,11 +67,13 @@ def _cleanup_rl() -> None:
     for ip in stale:
         del _rl[ip]
 
+
 def get_real_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
         return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
 
 def check_rate_limit(ip: str) -> bool:
     _cleanup_rl()
@@ -86,16 +85,16 @@ def check_rate_limit(ip: str) -> bool:
     _rl[ip].append(now)
     return True
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
 
 def ok(data):
     return JSONResponse({"status": "ok", "data": data})
 
+
 def err(msg: str, code: int = 400):
     return JSONResponse({"status": "error", "message": msg, "data": None}, status_code=code)
 
+
 def clean(d: dict) -> dict:
-    """Remove None values recursively."""
     result = {}
     for k, v in d.items():
         if isinstance(v, dict):
@@ -106,22 +105,23 @@ def clean(d: dict) -> dict:
             result[k] = v
     return result
 
+
 def safe_str(v) -> str | None:
-    """Sanitize string from untrusted source."""
     if v is None:
         return None
     s = str(v).strip()
     s = re.sub(r'[\x00-\x1f\x7f]', '', s)
     return s[:MAX_STR_LEN] if s else None
 
+
 def safe_num(v, typ=float):
-    """Return value only if it's the expected numeric type."""
     if v is None:
         return None
     try:
         return typ(v)
     except (TypeError, ValueError):
         return None
+
 
 def safe_bool(v) -> bool | None:
     if v is None:
@@ -130,10 +130,12 @@ def safe_bool(v) -> bool | None:
         return v
     return None
 
+
 def safe_cdn(url) -> str | None:
     if url and isinstance(url, str) and any(url.startswith(c) for c in ALLOWED_CDN):
         return url[:1024]
     return None
+
 
 def is_suno_host(url: str) -> bool:
     try:
@@ -142,21 +144,19 @@ def is_suno_host(url: str) -> bool:
     except Exception:
         return False
 
-# ─── URL parsing ──────────────────────────────────────────────────────────────
 
 def extract_id(url: str) -> str | None:
     m = SONG_RE.search(url)
-    if m: return m.group(1)
+    if m:
+        return m.group(1)
     m = UUID_FIND_RE.search(url)
-    if m: return m.group(0)
+    if m:
+        return m.group(0)
     return None
 
+
 async def resolve_short(url: str) -> str:
-    async with httpx.AsyncClient(
-        timeout=8,
-        follow_redirects=False,
-        headers=HEADERS,
-    ) as c:
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False, headers=HEADERS) as c:
         for _ in range(5):
             r = await c.get(url)
             if r.status_code in (301, 302, 303, 307, 308):
@@ -171,6 +171,7 @@ async def resolve_short(url: str) -> str:
             else:
                 return str(r.url)
     return url
+
 
 async def get_id(raw: str) -> str:
     raw = raw.strip()
@@ -191,7 +192,6 @@ async def get_id(raw: str) -> str:
         raise ValueError("No track ID found in URL")
     return tid
 
-# ─── metadata fetch (parallel) ───────────────────────────────────────────────
 
 async def _try_meta(client: httpx.AsyncClient, url: str) -> dict | None:
     try:
@@ -205,6 +205,7 @@ async def _try_meta(client: httpx.AsyncClient, url: str) -> dict | None:
     except Exception:
         return None
 
+
 async def fetch_meta(track_id: str) -> dict | None:
     urls = [
         f"https://studio-api.suno.ai/api/clip/{track_id}/",
@@ -214,7 +215,6 @@ async def fetch_meta(track_id: str) -> dict | None:
         results = await asyncio.gather(*[_try_meta(c, u) for u in urls])
     return next((r for r in results if r is not None), None)
 
-# ─── response builder ─────────────────────────────────────────────────────────
 
 def build(track_id: str, meta: dict | None) -> dict:
     cdn_mp3 = f"https://cdn1.suno.ai/{track_id}.mp3"
@@ -226,14 +226,14 @@ def build(track_id: str, meta: dict | None) -> dict:
     def g(*keys):
         for k in keys:
             v = clip.get(k)
-            if v is not None: return v
+            if v is not None:
+                return v
         return None
 
     mp3_url   = safe_cdn(g("audio_url"))       or cdn_mp3
     cover_jpg = safe_cdn(g("image_url"))       or cdn_jpg
     cover_png = safe_cdn(g("image_large_url")) or cdn_png
 
-    # fix: title and artist use different source keys — no overlap
     title  = safe_str(g("title")) or safe_str(g("display_name"))
     artist = safe_str(g("user_display_name") or g("handle") or g("author"))
 
@@ -252,7 +252,6 @@ def build(track_id: str, meta: dict | None) -> dict:
         "artist":       artist,
         "tags":         safe_str(g("tags") or m.get("tags")),
         "genre":        safe_str(m.get("genre") or m.get("style") or g("style")),
-        # numeric fields validated to correct type
         "duration":     safe_num(g("duration", "audio_duration"), float),
         "created_at":   safe_str(g("created_at")),
         "is_public":    safe_bool(g("is_public")),
@@ -262,7 +261,6 @@ def build(track_id: str, meta: dict | None) -> dict:
         "prompt":       safe_str(m.get("prompt") or m.get("gpt_description_prompt") or g("prompt")),
     })
 
-# ─── routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/track")
 async def track(request: Request, url: str = Query(...)):
@@ -297,7 +295,6 @@ async def track(request: Request, url: str = Query(...)):
 
 @app.get("/download/{track_id}")
 async def download(request: Request, track_id: str):
-    """Proxy MP3 download — bypasses CDN CORS restrictions."""
     ip = get_real_ip(request)
     if not check_rate_limit(ip):
         return err("Rate limit exceeded", 429)
@@ -307,7 +304,6 @@ async def download(request: Request, track_id: str):
     mp3_url = f"https://cdn1.suno.ai/{track_id}.mp3"
 
     try:
-        from fastapi.responses import StreamingResponse
         async def stream():
             async with httpx.AsyncClient(timeout=60, headers=HEADERS) as c:
                 async with c.stream("GET", mp3_url) as r:
@@ -326,18 +322,3 @@ async def download(request: Request, track_id: str):
         )
     except Exception as e:
         return err(f"Download failed: {e}", 500)
-
-    ip = get_real_ip(request)
-    if not check_rate_limit(ip):
-        return err("Rate limit exceeded — max 20 requests per minute", 429)
-    if not UUID_RE.fullmatch(track_id):
-        return err("Invalid UUID format", 400)
-
-    cached = cache_get(track_id)
-    if cached:
-        return ok(cached)
-
-    meta   = await fetch_meta(track_id)
-    result = build(track_id, meta)
-    cache_set(track_id, result)
-    return ok(result)
