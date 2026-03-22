@@ -112,7 +112,7 @@ curl "https://opensuno.vercel.app/track?url=suno.com/s/FqENDOXo6l4yKQT0"
 ## Run it yourself
 
 ```bash
-git clone https://github.com/your-repo/opensuno
+git clone https://github.com/1akpy/OpenSuno-and-ApiSuno
 cd opensuno
 pip install -r requirements.txt
 uvicorn main:app --reload
