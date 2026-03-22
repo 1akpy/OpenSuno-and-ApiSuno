@@ -2,9 +2,9 @@
 
 <br/>
 
-# 🎵 OpenSuno-and-ApiSuno
+# 🎵 OpenSuno
 
-### Unofficial Suno track resolver — free & open source
+### Get MP3, cover and metadata from any Suno track — no API key, no sign-up
 
 <br/>
 
@@ -14,7 +14,7 @@
 
 <br/>
 
-Pass any Suno link → get MP3, cover image and metadata. No API key. No auth.
+Just drop a Suno link — get a direct MP3 URL, cover image and track metadata back in seconds.
 
 <br/>
 
@@ -22,12 +22,17 @@ Pass any Suno link → get MP3, cover image and metadata. No API key. No auth.
 
 ---
 
-## Endpoints
+## Quick start
+
+```bash
+curl "https://opensuno.vercel.app/track?url=suno.com/s/FqENDOXo6l4yKQT0"
+```
+
+Any Suno link format works:
 
 ```
-GET /track?url=suno.com/s/{id}         short link
-GET /track?url=suno.com/song/{uuid}    full link
-GET /track/{uuid}                      direct UUID
+suno.com/s/{id}        — short link
+suno.com/song/{uuid}   — full link
 ```
 
 ---
@@ -56,40 +61,13 @@ GET /track/{uuid}                      direct UUID
 }
 ```
 
-> Null fields are omitted — only available data is returned.
+Fields with no value are omitted — you only get what's actually there.
 
 ---
 
-## Usage
+## Examples
 
-**JavaScript**
-```js
-const res    = await fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx');
-const { data } = await res.json();
-
-new Audio(data.mp3_url).play();
-document.getElementById('cover').src = data.cover_url;
-```
-
-**Python**
-```python
-import requests
-
-data = requests.get(
-    'https://opensuno.vercel.app/track',
-    params={'url': 'suno.com/s/FqENDOXo6l4yKQT0'}
-).json()['data']
-
-print(data['mp3_url'])
-print(data['cover_url'])
-```
-
-**curl**
-```bash
-curl "https://opensuno.vercel.app/track?url=suno.com/s/FqENDOXo6l4yKQT0"
-```
-
-**HTML**
+**Play in the browser**
 ```html
 <img id="cover">
 <audio id="player" controls></audio>
@@ -102,6 +80,42 @@ fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx')
     document.getElementById('player').src = data.mp3_url;
   });
 </script>
+```
+
+**JavaScript**
+```js
+const { data } = await fetch('https://opensuno.vercel.app/track?url=suno.com/s/xxx')
+  .then(r => r.json());
+
+new Audio(data.mp3_url).play();
+```
+
+**Python**
+```python
+import requests
+
+data = requests.get(
+    'https://opensuno.vercel.app/track',
+    params={'url': 'suno.com/s/FqENDOXo6l4yKQT0'}
+).json()['data']
+
+print(data['mp3_url'])
+```
+
+**curl**
+```bash
+curl "https://opensuno.vercel.app/track?url=suno.com/s/FqENDOXo6l4yKQT0"
+```
+
+---
+
+## Run it yourself
+
+```bash
+git clone https://github.com/your-repo/opensuno
+cd opensuno
+pip install -r requirements.txt
+uvicorn main:app --reload
 ```
 
 ---
