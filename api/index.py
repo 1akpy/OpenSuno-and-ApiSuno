@@ -216,28 +216,7 @@ async def fetch_meta(track_id: str) -> dict | None:
     return next((r for r in results if r is not None), None)
 
 
-async def fetch_comments(track_id: str) -> int | None:
-    urls = [
-        f"https://studio-api.suno.ai/api/comment/?clip_id={track_id}&page=0",
-        f"https://studio-api.prod.suno.ai/api/comment/?clip_id={track_id}&page=0",
-    ]
-    async with httpx.AsyncClient(timeout=6, headers=HEADERS) as c:
-        results = await asyncio.gather(*[_try_meta(c, u) for u in urls])
-    for r in results:
-        if r is None:
-            continue
-        for key in ("total_num", "total", "count", "total_count"):
-            v = r.get(key)
-            if v is not None:
-                return safe_num(v, int)
-        if isinstance(r, list):
-            return len(r)
-        if isinstance(r.get("comments"), list):
-            return len(r["comments"])
-    return None
-
-
-def build(track_id: str, meta: dict | None, comment_count: int | None = None) -> dict:
+def build(track_id: str, meta: dict | None) -> dict:
     cdn_mp3 = f"https://cdn1.suno.ai/{track_id}.mp3"
     cdn_jpg = f"https://cdn2.suno.ai/image_{track_id}.jpeg"
     cdn_png = f"https://cdn2.suno.ai/image_{track_id}.png"
@@ -259,28 +238,27 @@ def build(track_id: str, meta: dict | None, comment_count: int | None = None) ->
     artist = safe_str(g("user_display_name") or g("handle") or g("author"))
 
     return clean({
-        "id":            track_id,
-        "suno_url":      f"https://suno.com/song/{track_id}",
-        "mp3_url":       mp3_url,
-        "cover_url":     cover_jpg,
-        "cover_png":     cover_png,
+        "id":         track_id,
+        "suno_url":   f"https://suno.com/song/{track_id}",
+        "mp3_url":    mp3_url,
+        "cover_url":  cover_jpg,
+        "cover_png":  cover_png,
         "download": {
             "mp3":       mp3_url,
             "cover_jpg": cover_jpg,
             "cover_png": cover_png,
         },
-        "title":         title,
-        "artist":        artist,
-        "tags":          safe_str(g("tags") or m.get("tags")),
-        "genre":         safe_str(m.get("genre") or m.get("style") or g("style")),
-        "duration":      safe_num(g("duration", "audio_duration"), float),
-        "created_at":    safe_str(g("created_at")),
-        "is_public":     safe_bool(g("is_public")),
-        "play_count":    safe_num(g("play_count"), int),
-        "upvote_count":  safe_num(g("upvote_count"), int),
-        "comment_count": comment_count,
-        "model":         safe_str(g("model_version", "model")),
-        "prompt":        safe_str(m.get("prompt") or m.get("gpt_description_prompt") or g("prompt")),
+        "title":        title,
+        "artist":       artist,
+        "tags":         safe_str(g("tags") or m.get("tags")),
+        "genre":        safe_str(m.get("genre") or m.get("style") or g("style")),
+        "duration":     safe_num(g("duration", "audio_duration"), float),
+        "created_at":   safe_str(g("created_at")),
+        "is_public":    safe_bool(g("is_public")),
+        "play_count":   safe_num(g("play_count"), int),
+        "upvote_count": safe_num(g("upvote_count"), int),
+        "model":        safe_str(g("model_version", "model")),
+        "prompt":       safe_str(m.get("prompt") or m.get("gpt_description_prompt") or g("prompt")),
     })
 
 
@@ -308,52 +286,10 @@ async def track(request: Request, url: str = Query(...)):
         cache_set(f"url:{url}", cached)
         return ok(cached)
 
-    meta, comments = await asyncio.gather(fetch_meta(tid), fetch_comments(tid))
-    result = build(tid, meta, comments)
+    meta   = await fetch_meta(tid)
+    result = build(tid, meta)
     cache_set(tid, result)
     cache_set(f"url:{url}", result)
-    return ok(result)
-
-
-@app.get("/stats")
-async def stats(request: Request, url: str = Query(...)):
-    ip = get_real_ip(request)
-    if not check_rate_limit(ip):
-        return err("Rate limit exceeded — max 20 requests per minute", 429)
-    if not url or len(url) > MAX_URL_LEN:
-        return err("URL too long or empty", 400)
-
-    cached = cache_get(f"stats:{url}")
-    if cached:
-        return ok(cached)
-
-    try:
-        tid = await get_id(url)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception as e:
-        return err(f"Failed to resolve: {e}", 500)
-
-    meta, comments = await asyncio.gather(fetch_meta(tid), fetch_comments(tid))
-    clip = (meta or {}).get("clip") or meta or {}
-
-    def g(*keys):
-        for k in keys:
-            v = clip.get(k)
-            if v is not None:
-                return v
-        return None
-
-    result = clean({
-        "id":            tid,
-        "suno_url":      f"https://suno.com/song/{tid}",
-        "artist":        safe_str(g("user_display_name", "handle", "author")),
-        "play_count":    safe_num(g("play_count"), int),
-        "upvote_count":  safe_num(g("upvote_count"), int),
-        "comment_count": comments,
-    })
-
-    cache_set(f"stats:{url}", result)
     return ok(result)
 
 
